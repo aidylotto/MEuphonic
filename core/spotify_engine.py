@@ -16,7 +16,7 @@ load_dotenv()
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", "BE")
+SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", "US")
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE = "https://api.spotify.com/v1"
@@ -72,7 +72,7 @@ class SpotifyClient:
 
     def search_artists(self, mood_query: str, limit: int = 5) -> List[SpotifyArtist]:
         # Using Search endpoint :contentReference[oaicite:3]{index=3}
-        params = {"q": mood_query, "type": "artist", "limit": limit, "market": SPOTIFY_MARKET}
+        params = {"q": mood_query, "type": "artist", "limit": limit}
         data = self._get("/search", params=params)
 
         artists = []
