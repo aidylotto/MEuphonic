@@ -8,8 +8,7 @@ from dotenv import load_dotenv
 
 import re
 from typing import List
-from .emotion_engine import MoodProfile
-from .spotify_engine import SpotifyTrack  # if this creates circular import, remove and use typing.Any
+from .emotion_engine import MoodProfile  # if this creates circular import, remove and use typing.Any
 
 
 load_dotenv()
@@ -103,20 +102,29 @@ class SpotifyClient:
             )
         return tracks
 
+import re
+from typing import List
+
+from .emotion_engine import MoodProfile
+
+
 def build_mood_query(description: str, mood: MoodProfile) -> str:
-    # Build a better search query by mixing mood label + key terms from description
-    # Keep it simple and robust.
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", description.lower())
     tokens = [t for t in text.split() if len(t) >= 4]
     top = tokens[:6]
-    return f'{mood.label} {" ".join(top)}'
+    # Include mood label to steer artist search
+    return f'{mood.label} {" ".join(top)}'.strip()
 
-def rank_tracks_by_mood_text(description: str, tracks: List[SpotifyTrack]) -> List[SpotifyTrack]:
-    # Re-rank by keyword overlap between description and track title/artist name.
+
+def rank_tracks_by_mood_text(description: str, tracks: List) -> List:
+    """
+    tracks: List of SpotifyTrack objects (defined in this module).
+    We avoid importing SpotifyTrack here to prevent circular imports.
+    """
     text = description.lower()
-    keywords = set([w for w in re.findall(r"[a-z]{4,}", text)])
+    keywords = set(re.findall(r"[a-z]{4,}", text))
 
-    def score(t: SpotifyTrack) -> float:
+    def score(t) -> float:
         hay = f"{t.name} {t.artist}".lower()
         overlap = sum(1 for w in keywords if w in hay)
         return (overlap * 10.0) + (t.popularity * 0.05)
