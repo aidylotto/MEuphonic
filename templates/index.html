@@ -23,6 +23,9 @@
       .name { font-weight: 700; }
       .muted { color: var(--muted); font-size: 13px; }
       a { color: var(--accent); text-decoration: none; }
+      .ctrl { display:flex; align-items:center; gap:10px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.20); }
+      input[type="range"] { width: 180px; }
+      .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
     </style>
   </head>
   <body>
@@ -34,12 +37,33 @@
         <div class="card">
           <div class="row">
             <span id="modeMidi" class="pill active" onclick="setMode('midi')">AI MIDI (generate)</span>
-            <span id="modeSpotify" class="pill" onclick="setMode('spotify')">Spotify (find songs)</span>
+            <span id="modeSpotify" class="pill" onclick="setMode('spotify')">Spotify (popular mood songs)</span>
+          </div>
+
+          <div class="row" style="margin-top:12px;">
+            <div class="ctrl">
+              <label class="muted">Language:</label>
+              <select id="lang" style="padding:6px;border-radius:10px;background:rgba(0,0,0,0.25);color:var(--text);border:1px solid rgba(255,255,255,0.12);">
+                <option value="en">English</option>
+                <option value="fa">Persian</option>
+                <option value="tr">Turkish</option>
+                <option value="ar">Arabic</option>
+                <option value="fr">French</option>
+                <option value="es">Spanish</option>
+              </select>
+            </div>
+
+            <div id="popCtrl" class="ctrl" style="display:none;">
+              <label class="muted">Min popularity:</label>
+              <input id="minPop" type="range" min="0" max="95" value="55" />
+              <span id="minPopLabel" class="muted">55</span>
+            </div>
           </div>
 
           <div style="margin-top: 12px;">
             <label class="muted">Describe your mood / feeling</label>
             <textarea id="desc" placeholder="e.g., I feel lonely but hopeful, walking alone at night in the rain..."></textarea>
+            <div class="hint" id="modeHint">MIDI mode generates a multi-track MIDI file you can open in a DAW.</div>
           </div>
 
           <div class="row">
@@ -48,7 +72,6 @@
           </div>
 
           <div id="spotifyArea" style="display:none; margin-top: 12px;">
-            <div class="list" id="artistList"></div>
             <div class="list" id="trackList"></div>
           </div>
         </div>
@@ -57,20 +80,27 @@
 
     <script>
       let mode = "midi";
-      let selectedArtistId = null;
 
       function setMode(m) {
         mode = m;
         document.getElementById("modeMidi").classList.toggle("active", m === "midi");
         document.getElementById("modeSpotify").classList.toggle("active", m === "spotify");
         document.getElementById("spotifyArea").style.display = (m === "spotify") ? "block" : "none";
+        document.getElementById("popCtrl").style.display = (m === "spotify") ? "flex" : "none";
+        document.getElementById("modeHint").textContent = (m === "spotify")
+          ? "Spotify mode returns popular tracks related to your mood description."
+          : "MIDI mode generates a multi-track MIDI file you can open in a DAW.";
         resetLists();
       }
 
+      document.addEventListener("DOMContentLoaded", () => {
+        const minPop = document.getElementById("minPop");
+        const label = document.getElementById("minPopLabel");
+        minPop.addEventListener("input", () => label.textContent = minPop.value);
+      });
+
       function resetLists(){
-        document.getElementById("artistList").innerHTML = "";
         document.getElementById("trackList").innerHTML = "";
-        selectedArtistId = null;
       }
 
       function resetUI(){
@@ -83,10 +113,9 @@
         if (!description) { alert("Please type a mood description."); return; }
 
         if (mode === "midi") {
-          // POST /generate -> returns MIDI file download
           const form = new FormData();
           form.append("description", description);
-          form.append("mode", "midi");
+
           const res = await fetch("/generate", { method: "POST", body: form });
           if (!res.ok) { alert("Failed to generate MIDI."); return; }
 
@@ -102,45 +131,16 @@
           return;
         }
 
-        // Spotify mode: fetch artists first
+        // Spotify mood tracks (popular + relevant)
         resetLists();
-        const form = new FormData();
-        form.append("description", description);
-        const res = await fetch("/spotify/artists", { method: "POST", body: form });
-        if (!res.ok) { alert("Failed to fetch artists."); return; }
-        const data = await res.json();
-        renderArtists(data.artists || [], description);
-      }
-
-      function renderArtists(artists, description) {
-        const el = document.getElementById("artistList");
-        if (!artists.length) {
-          el.innerHTML = `<div class="item"><div class="meta"><div class="name">No artists found</div><div class="muted">Try a different description.</div></div></div>`;
-          return;
-        }
-
-        el.innerHTML = artists.map(a => `
-          <div class="item">
-            <div class="meta">
-              <div class="name">${escapeHtml(a.name)}</div>
-              <div class="muted">Popularity: ${a.popularity}</div>
-              <div class="muted"><a href="${a.url}" target="_blank">Open artist in Spotify</a></div>
-            </div>
-            <button class="btn secondary" onclick="chooseArtist('${a.id}')">Choose</button>
-          </div>
-        `).join("");
-      }
-
-      async function chooseArtist(artistId) {
-        const description = document.getElementById("desc").value.trim();
-        selectedArtistId = artistId;
+        const language = document.getElementById("lang").value;
 
         const form = new FormData();
         form.append("description", description);
-        form.append("artist_id", artistId);
+        form.append("language", language);
 
-        const res = await fetch("/spotify/tracks", { method: "POST", body: form });
-        if (!res.ok) { alert("Failed to fetch tracks."); return; }
+        const res = await fetch("/spotify/moodtracks", { method: "POST", body: form });
+        if (!res.ok) { alert("Failed to fetch mood tracks."); return; }
         const data = await res.json();
         renderTracks(data.tracks || []);
       }
@@ -148,7 +148,7 @@
       function renderTracks(tracks) {
         const el = document.getElementById("trackList");
         if (!tracks.length) {
-          el.innerHTML = `<div class="item"><div class="meta"><div class="name">No tracks found</div></div></div>`;
+          el.innerHTML = `<div class="item"><div class="meta"><div class="name">No tracks found</div><div class="muted">Try changing the description or language.</div></div></div>`;
           return;
         }
 
@@ -157,9 +157,9 @@
             <div class="meta">
               <div class="name">${escapeHtml(t.name)}</div>
               <div class="muted">${escapeHtml(t.artist)} • Popularity: ${t.popularity}</div>
-              <div class="muted"><a href="${t.url}" target="_blank">Open track in Spotify</a></div>
+              <div class="muted"><a href="${t.url}" target="_blank">Open in Spotify</a></div>
             </div>
-            <button class="btn" onclick="window.open('${t.url}','_blank')">Play on Spotify</button>
+            <button class="btn" onclick="window.open('${t.url}','_blank')">Play</button>
           </div>
         `).join("");
       }

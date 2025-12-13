@@ -2,14 +2,13 @@ import os
 import time
 import base64
 import requests
+import re
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+
 from dotenv import load_dotenv
 
-import re
-from typing import List
-from .emotion_engine import MoodProfile  # if this creates circular import, remove and use typing.Any
-
+# ---- ENV --------------------------------------------------------------------
 
 load_dotenv()
 
@@ -20,6 +19,7 @@ SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", "US")
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE = "https://api.spotify.com/v1"
 
+# ---- DATA MODELS ------------------------------------------------------------
 
 @dataclass
 class SpotifyArtist:
@@ -38,10 +38,14 @@ class SpotifyTrack:
     popularity: int
 
 
+# ---- SPOTIFY CLIENT ----------------------------------------------------------
+
 class SpotifyClient:
     def __init__(self) -> None:
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
+
+    # ---- AUTH ---------------------------------------------------------------
 
     def _get_token(self) -> str:
         if self._token and time.time() < self._token_expires_at - 30:
@@ -50,17 +54,22 @@ class SpotifyClient:
         if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
             raise RuntimeError("Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET in .env")
 
-        auth = base64.b64encode(f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()).decode()
+        auth = base64.b64encode(
+            f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
+        ).decode()
+
         headers = {"Authorization": f"Basic {auth}"}
         data = {"grant_type": "client_credentials"}
 
         r = requests.post(TOKEN_URL, headers=headers, data=data, timeout=20)
         r.raise_for_status()
-        payload = r.json()
 
+        payload = r.json()
         self._token = payload["access_token"]
         self._token_expires_at = time.time() + payload.get("expires_in", 3600)
         return self._token
+
+    # ---- HTTP ---------------------------------------------------------------
 
     def _get(self, path: str, params: Optional[Dict] = None) -> Dict:
         token = self._get_token()
@@ -69,12 +78,13 @@ class SpotifyClient:
         r.raise_for_status()
         return r.json()
 
-    def search_artists(self, mood_query: str, limit: int = 5) -> List[SpotifyArtist]:
-        # Using Search endpoint :contentReference[oaicite:3]{index=3}
-        params = {"q": mood_query, "type": "artist", "limit": limit}
+    # ---- SEARCH -------------------------------------------------------------
+
+    def search_artists(self, query: str, limit: int = 5) -> List[SpotifyArtist]:
+        params = {"q": query, "type": "artist", "limit": limit}
         data = self._get("/search", params=params)
 
-        artists = []
+        artists: List[SpotifyArtist] = []
         for a in data.get("artists", {}).get("items", []):
             artists.append(
                 SpotifyArtist(
@@ -87,9 +97,12 @@ class SpotifyClient:
         return artists
 
     def artist_top_tracks(self, artist_id: str, limit: int = 10) -> List[SpotifyTrack]:
-        # Get Artist's Top Tracks endpoint :contentReference[oaicite:4]{index=4}
-        data = self._get(f"/artists/{artist_id}/top-tracks", params={"market": SPOTIFY_MARKET})
-        tracks = []
+        data = self._get(
+            f"/artists/{artist_id}/top-tracks",
+            params={"market": SPOTIFY_MARKET},
+        )
+
+        tracks: List[SpotifyTrack] = []
         for t in data.get("tracks", [])[:limit]:
             tracks.append(
                 SpotifyTrack(
@@ -102,31 +115,46 @@ class SpotifyClient:
             )
         return tracks
 
-import re
-from typing import List
+    def search_tracks(self, query: str, limit: int = 50) -> List[SpotifyTrack]:
+        params = {"q": query, "type": "track", "limit": limit}
+        data = self._get("/search", params=params)
 
-from .emotion_engine import MoodProfile
+        tracks: List[SpotifyTrack] = []
+        for t in data.get("tracks", {}).get("items", []):
+            tracks.append(
+                SpotifyTrack(
+                    id=t["id"],
+                    name=t["name"],
+                    artist=t["artists"][0]["name"],
+                    url=t["external_urls"]["spotify"],
+                    popularity=t.get("popularity", 0),
+                )
+            )
+        return tracks
 
 
-def build_mood_query(description: str, mood: MoodProfile) -> str:
-    text = re.sub(r"[^a-zA-Z0-9\s]", " ", description.lower())
-    tokens = [t for t in text.split() if len(t) >= 4]
-    top = tokens[:6]
-    # Include mood label to steer artist search
-    return f'{mood.label} {" ".join(top)}'.strip()
+# ---- RANKING / UTILITIES -----------------------------------------------------
 
-
-def rank_tracks_by_mood_text(description: str, tracks: List) -> List:
+def rank_tracks_popular_and_relevant(
+    description: str,
+    tracks: List[SpotifyTrack],
+    min_popularity: int = 55,
+) -> List[SpotifyTrack]:
     """
-    tracks: List of SpotifyTrack objects (defined in this module).
-    We avoid importing SpotifyTrack here to prevent circular imports.
+    Rank tracks by mood relevance + popularity.
+    Designed to surface popular but emotionally relevant songs.
     """
     text = description.lower()
     keywords = set(re.findall(r"[a-z]{4,}", text))
 
-    def score(t) -> float:
+    def text_overlap(t: SpotifyTrack) -> float:
         hay = f"{t.name} {t.artist}".lower()
-        overlap = sum(1 for w in keywords if w in hay)
-        return (overlap * 10.0) + (t.popularity * 0.05)
+        return sum(1 for w in keywords if w in hay)
 
-    return sorted(tracks, key=score, reverse=True)
+    def score(t: SpotifyTrack) -> float:
+        relevance = min(1.0, text_overlap(t) / 4.0)
+        popularity = t.popularity / 100.0
+        return (0.60 * relevance) + (0.40 * popularity)
+
+    filtered = [t for t in tracks if t.popularity >= min_popularity]
+    return sorted(filtered, key=score, reverse=True)
