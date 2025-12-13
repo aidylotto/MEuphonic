@@ -4,14 +4,31 @@ from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 from pathlib import Path
 
+from core.spotify_engine import SpotifyClient
+
 from core.emotion_engine import analyze_mood
 from core.theory_engine import plan_song
 from core.structure_engine import build_structure
 from core.midi_engine import render_to_midi
 
-
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+spotify = SpotifyClient()
+
+
+@app.post("/spotify/artists")
+def spotify_artists(description: str = Form(...)):
+    # simple query construction: mood words + context terms
+    mood_query = f"{description}"
+    artists = spotify.search_artists(mood_query, limit=5)
+    return {"artists": [a.__dict__ for a in artists]}
+
+
+@app.post("/spotify/tracks")
+def spotify_tracks(artist_id: str = Form(...)):
+    tracks = spotify.artist_top_tracks(artist_id, limit=10)
+    # We'll return 10 and let UI show top 3 first
+    return {"tracks": [t.__dict__ for t in tracks]}
 
 
 @app.get("/", response_class=HTMLResponse)

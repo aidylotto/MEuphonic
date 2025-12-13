@@ -4,22 +4,169 @@
     <meta charset="utf-8" />
     <title>MEuphonic</title>
     <style>
-      body { font-family: Arial, sans-serif; margin: 40px; max-width: 800px; }
-      textarea { width: 100%; height: 140px; padding: 10px; font-size: 14px; }
-      button { padding: 10px 16px; font-size: 14px; cursor: pointer; }
-      .box { border: 1px solid #ddd; padding: 18px; border-radius: 10px; }
+      :root { --bg:#0b0f17; --card:#121a27; --text:#e9eef7; --muted:#a8b3c7; --accent:#6aa6ff; }
+      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--text); }
+      .wrap { max-width: 980px; margin: 40px auto; padding: 0 18px; }
+      h1 { font-size: 34px; margin: 0 0 8px; }
+      .sub { color: var(--muted); margin: 0 0 22px; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+      .card { background: var(--card); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px; }
+      textarea { width: 100%; height: 140px; padding: 12px; font-size: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color: var(--text); }
+      .row { display:flex; gap:10px; flex-wrap: wrap; align-items:center; margin-top: 12px; }
+      .btn { border: 0; border-radius: 10px; padding: 10px 14px; background: var(--accent); color:#061225; font-weight: 650; cursor: pointer; }
+      .btn.secondary { background: transparent; color: var(--text); border: 1px solid rgba(255,255,255,0.18); }
+      .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.14); color: var(--muted); cursor: pointer; }
+      .pill.active { border-color: var(--accent); color: var(--text); }
+      .list { margin-top: 12px; display: grid; gap: 10px; }
+      .item { display:flex; justify-content: space-between; gap: 10px; padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.10); background: rgba(0,0,0,0.18); }
+      .item .meta { display:flex; flex-direction: column; gap: 2px; }
+      .name { font-weight: 700; }
+      .muted { color: var(--muted); font-size: 13px; }
+      a { color: var(--accent); text-decoration: none; }
     </style>
   </head>
   <body>
-    <h1>MEuphonic</h1>
-    <p>Mood → Music Generator (MIDI)</p>
+    <div class="wrap">
+      <h1>MEuphonic</h1>
+      <p class="sub">Mood → Music Engine (MIDI generation + Spotify mood exploration)</p>
 
-    <div class="box">
-      <form method="post" action="/generate">
-        <label>Describe your mood:</label><br /><br />
-        <textarea name="description" placeholder="e.g., I feel lonely but hopeful..."></textarea><br /><br />
-        <button type="submit">Generate MIDI</button>
-      </form>
+      <div class="grid">
+        <div class="card">
+          <div class="row">
+            <span id="modeMidi" class="pill active" onclick="setMode('midi')">AI MIDI (generate)</span>
+            <span id="modeSpotify" class="pill" onclick="setMode('spotify')">Spotify (find songs)</span>
+          </div>
+
+          <div style="margin-top: 12px;">
+            <label class="muted">Describe your mood / feeling</label>
+            <textarea id="desc" placeholder="e.g., I feel lonely but hopeful, walking alone at night in the rain..."></textarea>
+          </div>
+
+          <div class="row">
+            <button class="btn" onclick="runPrimary()">Run</button>
+            <button class="btn secondary" onclick="resetUI()">Reset</button>
+          </div>
+
+          <div id="spotifyArea" style="display:none; margin-top: 12px;">
+            <div class="list" id="artistList"></div>
+            <div class="list" id="trackList"></div>
+          </div>
+        </div>
+      </div>
     </div>
+
+    <script>
+      let mode = "midi";
+      let selectedArtistId = null;
+
+      function setMode(m) {
+        mode = m;
+        document.getElementById("modeMidi").classList.toggle("active", m === "midi");
+        document.getElementById("modeSpotify").classList.toggle("active", m === "spotify");
+        document.getElementById("spotifyArea").style.display = (m === "spotify") ? "block" : "none";
+        resetLists();
+      }
+
+      function resetLists(){
+        document.getElementById("artistList").innerHTML = "";
+        document.getElementById("trackList").innerHTML = "";
+        selectedArtistId = null;
+      }
+
+      function resetUI(){
+        document.getElementById("desc").value = "";
+        resetLists();
+      }
+
+      async function runPrimary() {
+        const description = document.getElementById("desc").value.trim();
+        if (!description) { alert("Please type a mood description."); return; }
+
+        if (mode === "midi") {
+          // POST /generate -> returns MIDI file download
+          const form = new FormData();
+          form.append("description", description);
+          form.append("mode", "midi");
+          const res = await fetch("/generate", { method: "POST", body: form });
+          if (!res.ok) { alert("Failed to generate MIDI."); return; }
+
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "meuphonic_song.mid";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+          return;
+        }
+
+        // Spotify mode: fetch artists first
+        resetLists();
+        const form = new FormData();
+        form.append("description", description);
+        const res = await fetch("/spotify/artists", { method: "POST", body: form });
+        if (!res.ok) { alert("Failed to fetch artists."); return; }
+        const data = await res.json();
+        renderArtists(data.artists || [], description);
+      }
+
+      function renderArtists(artists, description) {
+        const el = document.getElementById("artistList");
+        if (!artists.length) {
+          el.innerHTML = `<div class="item"><div class="meta"><div class="name">No artists found</div><div class="muted">Try a different description.</div></div></div>`;
+          return;
+        }
+
+        el.innerHTML = artists.map(a => `
+          <div class="item">
+            <div class="meta">
+              <div class="name">${escapeHtml(a.name)}</div>
+              <div class="muted">Popularity: ${a.popularity}</div>
+              <div class="muted"><a href="${a.url}" target="_blank">Open artist in Spotify</a></div>
+            </div>
+            <button class="btn secondary" onclick="chooseArtist('${a.id}')">Choose</button>
+          </div>
+        `).join("");
+      }
+
+      async function chooseArtist(artistId) {
+        const description = document.getElementById("desc").value.trim();
+        selectedArtistId = artistId;
+
+        const form = new FormData();
+        form.append("description", description);
+        form.append("artist_id", artistId);
+
+        const res = await fetch("/spotify/tracks", { method: "POST", body: form });
+        if (!res.ok) { alert("Failed to fetch tracks."); return; }
+        const data = await res.json();
+        renderTracks(data.tracks || []);
+      }
+
+      function renderTracks(tracks) {
+        const el = document.getElementById("trackList");
+        if (!tracks.length) {
+          el.innerHTML = `<div class="item"><div class="meta"><div class="name">No tracks found</div></div></div>`;
+          return;
+        }
+
+        el.innerHTML = tracks.map(t => `
+          <div class="item">
+            <div class="meta">
+              <div class="name">${escapeHtml(t.name)}</div>
+              <div class="muted">${escapeHtml(t.artist)} • Popularity: ${t.popularity}</div>
+              <div class="muted"><a href="${t.url}" target="_blank">Open track in Spotify</a></div>
+            </div>
+            <button class="btn" onclick="window.open('${t.url}','_blank')">Play on Spotify</button>
+          </div>
+        `).join("");
+      }
+
+      function escapeHtml(s) {
+        return String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+      }
+    </script>
   </body>
 </html>
