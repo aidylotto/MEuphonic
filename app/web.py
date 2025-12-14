@@ -5,73 +5,87 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 
-from core.emotion_engine import analyze_mood
-from core.theory_engine import plan_song
-from core.structure_engine import build_structure
+from core.ai_music_brain import analyze_text_to_music
 from core.midi_engine import render_to_midi
+from core.spotify_engine import SpotifyClient
 
-from core.spotify_engine import SpotifyClient, dedupe_tracks, rank_tracks_ai
-
+print("WEB APP LOADED")
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 spotify = SpotifyClient()
 
+GENRE_MAP = {
+    "rock": "rock",
+    "metal": "metal",
+    "jazz": "jazz",
+    "pop": "pop",
+    "ambient": "ambient",
+    "classical": "classical",
+}
 
-def lang_hint(language: str) -> str:
-    # Artist/lyrics language hint (best-effort)
-    return {
-        "fa": "persian iranian",
-        "tr": "turkish",
-        "ar": "arabic",
-        "fr": "french",
-        "es": "spanish",
-        "en": "",
-    }.get(language, "")
 
+# ---------------- HOME ----------------
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+# ---------------- MIDI GENERATION ----------------
+
 @app.post("/generate")
-def generate(description: str = Form(...), genre: str = Form("pop")):
-    mood = analyze_mood(description)
-    plan = plan_song(mood, genre=genre)  # <-- we’ll update plan_song signature
-    structure = build_structure(plan)
+def generate(description: str = Form(...)):
+    print("GENERATE:", description[:80])
 
-    out_dir = Path("outputs")
-    out_dir.mkdir(exist_ok=True)
-    out_path = out_dir / "meuphonic_song.mid"
+    profile = analyze_text_to_music(description)
 
-    midi_path = render_to_midi(structure, plan.tempo, str(out_path), mood, genre=genre)
-    return FileResponse(path=midi_path, filename="meuphonic_song.mid", media_type="audio/midi")
+    out_path = Path("outputs/meuphonic.mid")
+    out_path.parent.mkdir(exist_ok=True)
 
+    midi_path = render_to_midi(profile, str(out_path))
+
+    return FileResponse(
+        midi_path,
+        filename="meuphonic.mid",
+        media_type="audio/midi"
+    )
+
+
+# ---------------- SPOTIFY: ARTISTS FIRST ----------------
 
 @app.post("/spotify/artists")
-def spotify_artists(description: str = Form(...), language: str = Form("en"), variant: int = Form(0)):
-    mood = analyze_mood(description)
-    hint = lang_hint(language)
+def spotify_artists(description: str = Form(...), variant: int = Form(0)):
+    print("SPOTIFY ARTISTS:", description[:80], "variant:", variant)
 
-    # Variant changes offset so results can differ meaningfully
-    offset = (variant * 10) % 30
+    profile = analyze_text_to_music(description)
+    genre = GENRE_MAP.get(profile.genre, "pop")
 
-    query = f"{mood.label} {hint} pop".strip()
-    artists = spotify.search_popular_artists(query=query, limit=5, min_popularity=60, offset=offset)
+    artists = spotify.popular_artists_by_genre(
+        genre=genre,
+        limit=5,
+        offset=(variant % 3) * 5
+    )
 
-    return JSONResponse({"artists": [a.__dict__ for a in artists]})
+    return JSONResponse({
+        "artists": [a.__dict__ for a in artists]
+    })
 
+
+# ---------------- SPOTIFY: TRACKS FROM CHOSEN ARTIST ----------------
 
 @app.post("/spotify/tracks")
 def spotify_tracks(description: str = Form(...), artist_id: str = Form(...)):
-    mood = analyze_mood(description)
+    print("SPOTIFY TRACKS:", artist_id)
 
-    artist_tracks = spotify.artist_top_tracks(artist_id, limit=10)
-    year_tracks = spotify.top_songs_2025(limit_total=100)
-    global_tracks = spotify.top_50_global(limit_total=50)
+    profile = analyze_text_to_music(description)
 
-    candidates = dedupe_tracks(artist_tracks + year_tracks + global_tracks)
-    ranked = rank_tracks_ai(description, candidates, mood_label=mood.label)
+    tracks = spotify.recommend_tracks(
+        seed_artists=[artist_id],
+        mood_energy=profile.energy,
+        limit=10
+    )
 
-    return JSONResponse({"tracks": [t.__dict__ for t in ranked[:3]]})
+    return JSONResponse({
+        "tracks": [t.__dict__ for t in tracks]
+    })

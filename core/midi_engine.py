@@ -1,134 +1,124 @@
-import traceback
-from typing import List
+from mido import MidiFile, MidiTrack, Message, MetaMessage, bpm2tempo
 from pathlib import Path
+from typing import List
+from core.ai_music_brain import MusicProfile
+from core.harmony_engine import build_progression
+from core.groove_engine import groove_for_bar
 
-from mido import Message, MidiFile, MidiTrack, bpm2tempo, MetaMessage
-
-from .melody_engine import generate_melody
-from .bass_engine import bass_for_chords
-from .drum_engine import drum_hits
-from .guitar_engine import arp_pattern, strum_pattern
-from .theory_engine import SongPlan
-
-
-ROOT_NOTES_MID = {"C": 60, "D": 62, "E": 64, "F": 65, "G": 67, "A": 69, "B": 71}
-
-# GM instruments
+# General MIDI programs
 GM_PIANO = 0
-GM_EG_CLEAN = 27
-GM_EG_OVERDRIVE = 29
-GM_EG_DIST = 30
 GM_BASS = 33
-GM_JAZZ_GUITAR = 26
+GM_GUITAR = 29
+GM_STRINGS = 48
 GM_PAD = 89
-GM_FLUTE = 73
 
-DRUM_CH = 9
+ROOTS = {"C": 60, "D": 62, "E": 64, "F": 65, "G": 67, "A": 69}
+
+SECTION_ORDER = [
+    ("Intro", 4),
+    ("Verse", 8),
+    ("Chorus", 8),
+    ("Verse", 8),
+    ("Chorus", 8),
+    ("Bridge", 4),
+    ("Final Chorus", 8),
+    ("Outro", 4),
+]
 
 
-def _chord_notes(ch: str) -> List[int]:
-    root = ROOT_NOTES_MID.get(ch[0].upper(), 60)
-    if "m7" in ch:
-        return [root, root + 3, root + 7, root + 10]
-    if "maj7" in ch:
-        return [root, root + 4, root + 7, root + 11]
-    if "m" in ch:
-        return [root, root + 3, root + 7]
-    return [root, root + 4, root + 7]
+def chord_notes(root: int, minor: bool) -> List[int]:
+    return [root, root + (3 if minor else 4), root + 7]
 
 
-def render_to_midi(structure, tempo_bpm: int, output_path: str, mood, genre: str) -> str:
-    try:
-        mid = MidiFile()
-        ticks = mid.ticks_per_beat
-        bar = 4 * ticks
+def section_intensity(name: str) -> float:
+    if "Intro" in name or "Outro" in name:
+        return 0.4
+    if "Verse" in name:
+        return 0.6
+    if "Chorus" in name:
+        return 0.85
+    if "Bridge" in name:
+        return 0.7
+    return 0.6
 
-        chord_t = MidiTrack()
-        melody_t = MidiTrack()
-        bass_t = MidiTrack()
-        drum_t = MidiTrack()
-        guitar_t = MidiTrack()
 
-        mid.tracks += [chord_t, melody_t, bass_t, drum_t, guitar_t]
+def render_to_midi(profile: MusicProfile, output_path: str) -> str:
+    mid = MidiFile()
+    ticks = mid.ticks_per_beat
+    bar_ticks = ticks * 4
 
-        chord_t.append(MetaMessage("set_tempo", tempo=bpm2tempo(tempo_bpm), time=0))
+    chord_track = MidiTrack()
+    bass_track = MidiTrack()
+    melody_track = MidiTrack()
+    pad_track = MidiTrack()
+    drum_track = MidiTrack()
 
-        # --- instrumentation by genre ---
-        if genre == "metal":
-            chord_t.append(Message("program_change", program=GM_EG_DIST, time=0))
-            guitar_t.append(Message("program_change", program=GM_EG_DIST, time=0))
-        elif genre == "rock":
-            chord_t.append(Message("program_change", program=GM_EG_CLEAN, time=0))
-            guitar_t.append(Message("program_change", program=GM_EG_OVERDRIVE, time=0))
-        elif genre == "jazz":
-            chord_t.append(Message("program_change", program=GM_JAZZ_GUITAR, time=0))
-            melody_t.append(Message("program_change", program=GM_FLUTE, time=0))
-        elif genre == "ambient":
-            chord_t.append(Message("program_change", program=GM_PAD, time=0))
-        else:  # pop
-            chord_t.append(Message("program_change", program=GM_PIANO, time=0))
+    mid.tracks.extend([chord_track, bass_track, melody_track, pad_track, drum_track])
 
-        bass_t.append(Message("program_change", program=GM_BASS, time=0))
+    DRUM_CH = 9
 
-        # flatten chords
-        chords = []
-        for sec in structure.sections:
-            chords.extend(sec.chords)
+    chord_track.append(MetaMessage("set_tempo", tempo=bpm2tempo(profile.tempo), time=0))
 
-        # --- CHORDS ---
-        for ch in chords:
-            notes = _chord_notes(ch)
-            for n in notes:
-                chord_t.append(Message("note_on", note=n, velocity=55, time=0))
-            for n in notes:
-                chord_t.append(Message("note_off", note=n, velocity=0, time=bar))
+    # Instruments
+    chord_track.append(Message("program_change", program=GM_PIANO, time=0))
+    bass_track.append(Message("program_change", program=GM_BASS, time=0))
+    melody_track.append(Message("program_change", program=GM_GUITAR, time=0))
+    pad_track.append(Message("program_change", program=GM_PAD, time=0))
 
-        # --- BASS ---
-        bass_hits = bass_for_chords(chords, activity=0.8 if genre in ("rock", "metal") else 0.4)
-        abs_tick = last = 0
-        for hits in bass_hits:
-            for note, beat in hits:
-                t = abs_tick + int(beat * ticks)
-                delta = max(0, t - last)
-                bass_t.append(Message("note_on", note=note, velocity=80, time=delta))
-                bass_t.append(Message("note_off", note=note, velocity=0, time=int(0.3 * ticks)))
-                last = t + int(0.3 * ticks)
-            abs_tick += bar
+    root_note = ROOTS.get("A", 60)
+    minor = profile.scale != "major"
 
-        # --- MELODY ---
-        root = ROOT_NOTES_MID.get(chords[0][0], 60)
-        melody = generate_melody(root, mood, len(chords), melody_density=0.6)
+    abs_tick = 0
 
-        abs_tick = last = 0
-        for note in melody:
-            if note is None:
-                abs_tick += ticks
-                continue
-            delta = max(0, abs_tick - last)
-            melody_t.append(Message("note_on", note=note, velocity=90, time=delta))
-            melody_t.append(Message("note_off", note=note, velocity=0, time=int(0.8 * ticks)))
-            last = abs_tick + int(0.8 * ticks)
-            abs_tick += ticks
+    for section, bars in SECTION_ORDER:
+        intensity = section_intensity(section)
+        velocity = int(45 + intensity * 45)
 
-        # --- DRUMS ---
-        drum_pattern = drum_hits(
-            "rock" if genre in ("rock", "metal") else "soft",
-            len(chords),
-        )
+        for _ in range(bars):
+            # --- HARMONY ---
+            roots = build_progression(profile, section, root_note)
+            notes = chord_notes(roots[0], minor)
 
-        last = 0
-        for note, beat in drum_pattern:
-            t = int(beat * ticks)
-            delta = max(0, t - last)
-            drum_t.append(Message("note_on", channel=DRUM_CH, note=note, velocity=90, time=delta))
-            drum_t.append(Message("note_off", channel=DRUM_CH, note=note, velocity=0, time=int(0.1 * ticks)))
-            last = t + int(0.1 * ticks)
+            chord_track.append(Message("note_on", note=notes[0], velocity=velocity, time=abs_tick))
+            for n in notes[1:]:
+                chord_track.append(Message("note_on", note=n, velocity=velocity, time=0))
+            for i, n in enumerate(notes):
+                chord_track.append(Message("note_off", note=n, velocity=0, time=bar_ticks if i == 0 else 0))
 
-        out = Path(output_path).with_suffix(".mid")
-        out.parent.mkdir(exist_ok=True)
-        mid.save(out)
-        return str(out)
+            # --- BASS ---
+            if intensity > 0.45:
+                bass_track.append(Message("note_on", note=roots[0] - 12, velocity=velocity, time=abs_tick))
+                bass_track.append(Message("note_off", note=roots[0] - 12, velocity=0, time=bar_ticks))
 
-    except Exception:
-        traceback.print_exc()
-        raise
+            # --- MELODY (PHRASED) ---
+            if intensity > 0.65:
+                melody_track.append(
+                    Message("note_on", note=roots[0] + 12, velocity=velocity + 10, time=abs_tick)
+                )
+                melody_track.append(
+                    Message("note_off", note=roots[0] + 12, velocity=0, time=int(bar_ticks * 0.75))
+                )
+
+            # --- DRUMS ---
+            events = groove_for_bar(profile.genre, section, profile.energy)
+            last = 0
+            for note, beat, vel in sorted(events, key=lambda x: x[1]):
+                t = int(beat * ticks)
+                drum_track.append(
+                    Message("note_on", channel=DRUM_CH, note=note, velocity=vel, time=max(0, t - last))
+                )
+                drum_track.append(
+                    Message("note_off", channel=DRUM_CH, note=note, velocity=0, time=int(0.1 * ticks))
+                )
+                last = t + int(0.1 * ticks)
+
+            abs_tick = 0  # reset for next bar; MIDI deltas handled above
+
+        if "Chorus" in section:
+            root_note += 2  # lift
+
+    out = Path(output_path)
+    out.parent.mkdir(exist_ok=True)
+    mid.save(out)
+    return str(out)
+
