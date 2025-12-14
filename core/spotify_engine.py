@@ -95,6 +95,30 @@ class SpotifyClient:
                 )
             )
         return artists
+    
+    def search_popular_artists(self, query: str, limit: int = 10) -> List[SpotifyArtist]:
+        params = {
+            "q": query,
+            "type": "artist",
+            "limit": 50
+        }
+        data = self._get("/search", params=params)
+    
+        artists = []
+        for a in data.get("artists", {}).get("items", []):
+            pop = a.get("popularity", 0)
+            if pop >= 50:
+                artists.append(
+                    SpotifyArtist(
+                        id=a["id"],
+                        name=a["name"],
+                        url=a["external_urls"]["spotify"],
+                        popularity=pop,
+                    )
+                )
+    
+        artists.sort(key=lambda x: x.popularity, reverse=True)
+        return artists[:limit]
 
     def artist_top_tracks(self, artist_id: str, limit: int = 10) -> List[SpotifyTrack]:
         data = self._get(
